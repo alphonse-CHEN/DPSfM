@@ -5,13 +5,14 @@
 # LICENSE file in the root directory of this source tree.
 
 
-import torch
 import hydra
+import torch
 from omegaconf import DictConfig, OmegaConf
 
-from vggsfm.runners.runner import VGGSfMRunner
 from vggsfm.datasets.demo_loader import DemoLoader
+from vggsfm.runners.runner import VGGSfMRunner
 from vggsfm.utils.utils import seed_all_random_engines
+
 
 @hydra.main(config_path="cfgs/", config_name="demo")
 def demo_fn(cfg: DictConfig):
@@ -56,6 +57,8 @@ def demo_fn(cfg: DictConfig):
         "scene_dir"
     ]  # which is also cfg.SCENE_DIR for DemoLoader
 
+    output_dir = (Path(output_dir) / "vsfm-%s-col-fmt").resolve().as_posix()
+
     images = batch["image"]
     masks = batch["masks"] if batch["masks"] is not None else None
     crop_params = (
@@ -81,6 +84,7 @@ def demo_fn(cfg: DictConfig):
 if __name__ == "__main__":
     from pathlib import Path
     import os
+
     dp_torch_hub = Path('/d_disk/torch_hub')
     # Set Torhc Hub and HuggingFace hub to d_disk
     torch.hub.set_dir(dp_torch_hub.as_posix())
