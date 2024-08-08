@@ -637,5 +637,11 @@ def seed_all_random_engines(seed: int) -> None:
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+    dp_torch_hub = Path('/d_disk/torch_hub')
+    # Set Torhc Hub and HuggingFace hub to d_disk
+    torch.hub.set_dir(dp_torch_hub.as_posix())
+    os.environ["HF_HOME"] = "/d_disk/hf_hub"
+
     with torch.no_grad():
         demo_fn()
