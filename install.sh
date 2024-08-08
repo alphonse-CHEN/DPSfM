@@ -9,7 +9,7 @@
 conda deactivate
 
 # Set environment variables
-export ENV_NAME=void_sfm
+export ENV_NAME=vggsfm_tmp
 export PYTHON_VERSION=3.10
 export PYTORCH_VERSION=2.1.0
 export CUDA_VERSION=12.1
@@ -20,21 +20,12 @@ conda activate $ENV_NAME
 
 # Install PyTorch, torchvision, and PyTorch3D using conda
 conda install pytorch=$PYTORCH_VERSION torchvision pytorch-cuda=$CUDA_VERSION -c pytorch -c nvidia
-conda install -c fvcore -c iopath -c conda-forge fvcore iopath # Ori
-# https://anaconda.org/conda-forge/fvcore
-#conda install conda-forge::fvcore
-# https://anaconda.org/conda-forge/iopath
-#conda install conda-forge::iopath
-# https://anaconda.org/pytorch3d/pytorch3d
-# https://stackoverflow.com/questions/77401881/cannot-install-pytorch3d-using-conda-or-pip-on-windows-11
-# pytorch3d need to be installed from source
-#pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable"
-#conda install pytorch3d::pytorch3d
-conda install pytorch3d -c pytorch3d # Ori
+conda install -c fvcore -c iopath -c conda-forge fvcore iopath
+conda install pytorch3d=0.7.5 -c pytorch3d
 
 # Install pip packages
 pip install hydra-core --upgrade
-pip install omegaconf opencv-python einops visdom tqdm
+pip install omegaconf opencv-python einops visdom tqdm scipy plotly scikit-learn imageio[ffmpeg] gradio trimesh
 pip install accelerate==0.24.0
 
 # Install LightGlue
