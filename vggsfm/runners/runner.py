@@ -162,14 +162,14 @@ class VGGSfMRunner:
         self.viz = viz
 
     def run(
-        self,
-        images,
-        masks=None,
-        image_paths=None,
-        crop_params=None,
-        query_frame_num=None,
-        seq_name=None,
-        output_dir=None,
+            self,
+            images,
+            masks=None,
+            image_paths=None,
+            crop_params=None,
+            query_frame_num=None,
+            seq_name=None,
+            output_dir=None,
     ):
         """
         Executes the full VGGSfM pipeline on a set of input images.
@@ -225,7 +225,7 @@ class VGGSfMRunner:
                 seq_name=seq_name,
                 output_dir=output_dir,
             )
-            
+
             # Save the sparse reconstruction results
             self.save_sparse_reconstruction(predictions, seq_name, output_dir)
 
@@ -257,20 +257,19 @@ class VGGSfMRunner:
 
             if self.cfg.gr_visualize:
                 self.visualize_3D_in_gradio(predictions, seq_name, output_dir)
-                
+
             return predictions
 
-
     def sparse_reconstruct(
-        self,
-        images,
-        masks=None,
-        crop_params=None,
-        query_frame_num=3,
-        image_paths=None,
-        seq_name=None,
-        output_dir=None,
-        dtype=None,
+            self,
+            images,
+            masks=None,
+            crop_params=None,
+            query_frame_num=3,
+            image_paths=None,
+            seq_name=None,
+            output_dir=None,
+            dtype=None,
     ):
         """
         Perform sparse reconstruction on the given images.
@@ -512,7 +511,7 @@ class VGGSfMRunner:
                 pycamera.height = real_image_size[1]
 
                 resize_ratio = resize_ratio.item()
-    
+
             if self.cfg.shift_point2d_to_original_res:
                 # Also shift the point2D to original resolution
                 top_left = crop_params[0, pyimageid][-4:-2].abs().cpu().numpy()
@@ -610,7 +609,7 @@ class VGGSfMRunner:
         return predictions
 
     def make_reprojection_video(
-        self, predictions, video_size, image_paths, output_dir
+            self, predictions, video_size, image_paths, output_dir
     ):
         """
         Create a video with reprojections of the 3D points onto the original images.
@@ -645,7 +644,7 @@ class VGGSfMRunner:
         )
 
     def save_sparse_reconstruction(
-        self, predictions, seq_name=None, output_dir=None
+            self, predictions, seq_name=None, output_dir=None
     ):
         """
         Save the reconstruction results in COLMAP format.
@@ -668,7 +667,7 @@ class VGGSfMRunner:
         reconstruction_pycolmap.write(output_dir)
 
     def visualize_3D_in_visdom(
-        self, predictions, seq_name=None, output_dir=None
+            self, predictions, seq_name=None, output_dir=None
     ):
         """
         This function takes the predictions from the reconstruction process and visualizes
@@ -733,14 +732,13 @@ class VGGSfMRunner:
         print(f"Visualizing the scene by visdom at env: {env_name}")
 
         self.viz.plotlyplot(fig, env=env_name, win="3D")
-        
-        
+
     def visualize_3D_in_gradio(self, predictions, seq_name=None, output_dir=None):
         from vggsfm.utils.gradio import vggsfm_predictions_to_glb, visualize_by_gradio
-        
+
         # Convert predictions to GLB scene
         glbscene = vggsfm_predictions_to_glb(predictions)
-        
+
         visual_dir = os.path.join(output_dir, "visuals")
 
         os.makedirs(visual_dir, exist_ok=True)
@@ -749,10 +747,10 @@ class VGGSfMRunner:
 
         # Export the GLB scene to the specified file
         glbscene.export(file_obj=sparse_glb_file)
-        
+
         # Visualize the GLB file using Gradio
         visualize_by_gradio(sparse_glb_file)
-        
+
         unproj_dense_points3D = predictions["unproj_dense_points3D"]
         if unproj_dense_points3D is not None:
             print("Dense point cloud visualization in Gradio is not supported due to time constraints.")
@@ -770,14 +768,14 @@ def add_batch_dimension(tensor):
 
 
 def predict_tracks(
-    query_method,
-    max_query_pts,
-    track_predictor,
-    images,
-    masks,
-    fmaps_for_tracker,
-    query_frame_indexes,
-    bound_bboxes=None,
+        query_method,
+        max_query_pts,
+        track_predictor,
+        images,
+        masks,
+        fmaps_for_tracker,
+        query_frame_indexes,
+        bound_bboxes=None,
 ):
     """
     Predict tracks for the given images and masks.
@@ -862,15 +860,15 @@ def predict_tracks(
 
 
 def comple_nonvis_frames(
-    query_method,
-    max_query_pts,
-    track_predictor,
-    images,
-    masks,
-    fmaps_for_tracker,
-    preds,
-    bound_bboxes=None,
-    min_vis=500,
+        query_method,
+        max_query_pts,
+        track_predictor,
+        images,
+        masks,
+        fmaps_for_tracker,
+        preds,
+        bound_bboxes=None,
+        min_vis=500,
 ):
     """
     Completes non-visible frames by predicting additional 2D matches.
@@ -943,12 +941,12 @@ def comple_nonvis_frames(
 
 
 def get_query_points(
-    query_image,
-    seg_invalid_mask,
-    query_method,
-    max_query_num=4096,
-    det_thres=0.005,
-    bound_bbox=None,
+        query_image,
+        seg_invalid_mask,
+        query_method,
+        max_query_num=4096,
+        det_thres=0.005,
+        bound_bbox=None,
 ):
     """
     Extract query points from the given query image using the specified method.
@@ -1018,8 +1016,8 @@ def get_query_points(
 
     if query_points.shape[1] > max_query_num:
         random_point_indices = torch.randperm(query_points.shape[1])[
-            :max_query_num
-        ]
+                               :max_query_num
+                               ]
         query_points = query_points[:, random_point_indices, :]
 
     return query_points
