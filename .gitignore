@@ -143,3 +143,4 @@ dmypy.json
 **/tmp/
 **/outputs/
 /.idea
+/examples

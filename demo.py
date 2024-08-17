@@ -57,7 +57,8 @@ def demo_fn(cfg: DictConfig):
         "scene_dir"
     ]  # which is also cfg.SCENE_DIR for DemoLoader
 
-    output_dir = (Path(output_dir) / "vsfm-%s-col-fmt").resolve().as_posix()
+    scene_name = Path(output_dir).name
+    output_dir = (Path(output_dir) / f"vsfm-{scene_name}-col-fmt").resolve().as_posix()
 
     images = batch["image"]
     masks = batch["masks"] if batch["masks"] is not None else None

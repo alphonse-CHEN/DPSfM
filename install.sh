@@ -9,7 +9,7 @@
 conda deactivate
 
 # Set environment variables
-export ENV_NAME=vggsfm_tmp
+export ENV_NAME=dpsfm
 export PYTHON_VERSION=3.10
 export PYTORCH_VERSION=2.1.0
 export CUDA_VERSION=12.1
