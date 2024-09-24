@@ -233,7 +233,7 @@ def align_dense_depth_maps(
     return depth_dict, unproj_dense_points3D
 
 
-def build_monocular_depth_model(device='cuda'):
+def build_monocular_depth_model(device='cuda', model='DepthAnything'):
     """
     Builds the monocular depth model and loads the checkpoint.
 
@@ -241,22 +241,30 @@ def build_monocular_depth_model(device='cuda'):
     downloads the pre-trained weights from a URL, and loads these weights into the model.
     The model is then moved to the appropriate device and set to evaluation mode.
     """
+    if model == 'DepthAnything':
+        from dependency.depth_any_v2.depth_anything_v2.dpt import (
+            DepthAnythingV2,
+        )
 
-    from dependency.depth_any_v2.depth_anything_v2.dpt import (
-        DepthAnythingV2,
-    )
+        print("Building DepthAnythingV2")
+        model_config = {
+            "encoder": "vitl",
+            "features": 256,
+            "out_channels": [256, 512, 1024, 1024],
+        }
+        depth_model = DepthAnythingV2(**model_config)
+        checkpoint_path = "ckpt/checkpoints/depth_anything_v2_vitl.pth"
+        checkpoint = torch.load(checkpoint_path)
+        depth_model.load_state_dict(checkpoint)
+        print(f"DepthAnythingV2 built successfully")
+    elif model == 'Metric3D':
+        depth_model = torch.hub.load('yvanyin/metric3d', 'metric3d_vit_small', pretrain=True)
+        # pred_depth, confidence, output_dict = model.inference({'input': rgb})
 
-    print("Building DepthAnythingV2")
-    model_config = {
-        "encoder": "vitl",
-        "features": 256,
-        "out_channels": [256, 512, 1024, 1024],
-    }
-    depth_model = DepthAnythingV2(**model_config)
-    checkpoint_path = "ckpt/checkpoints/depth_anything_v2_vitl.pth"
-    checkpoint = torch.load(checkpoint_path)
-    depth_model.load_state_dict(checkpoint)
-    print(f"DepthAnythingV2 built successfully")
+    else:
+        raise ValueError(f"Model {model} not supported")
+
+
     return depth_model.to(device)
 
 
@@ -270,7 +278,7 @@ def save_dense_depth_into_point_cloud(unproj_dense_points3D, output_dir):
     """
     point_cloud_dir = os.path.join(output_dir, "point_cloud")
     os.makedirs(point_cloud_dir, exist_ok=True)
-    for img_basename in unproj_dense_points3D:
+    for img_basename in tqdm(unproj_dense_points3D):
         fn_output_path = Path(point_cloud_dir) / (img_basename.split('.')[0] + '.ply')
         write_unproj_dense_points3D_to_ply(
             unproj_dense_points3D_ins=unproj_dense_points3D[img_basename],
@@ -372,8 +380,8 @@ if __name__ == '__main__':
 
     import pycolmap
 
-    dp_sfm_rec_path = Path(r"/e_disk/ZMData/ZhiNengDao/sample-left-front-right-6-from-2075-to-80-720P/results_superpoint+lightglue_matching_lowres_quality_high/reconstruction")
-    dp_images = Path(r"/e_disk/ZMData/ZhiNengDao/sample-left-front-right-6-from-2075-to-80-720P/images")
+    dp_sfm_rec_path = Path(r"/e_disk/ZMData/ZhiNengDao/sample-left-front-right-20-from-2075-to-94-480P/results_superpoint+lightglue_matching_lowres_quality_high/reconstruction")
+    dp_images = Path(r"/e_disk/ZMData/ZhiNengDao/sample-left-front-right-20-from-2075-to-94-480P/images")
 
     # 1. Load SfM Reconstruction
     sfm_rec = pycolmap.Reconstruction(dp_sfm_rec_path.as_posix())
@@ -392,12 +400,11 @@ if __name__ == '__main__':
     # 3. Extract Dense Depth
     dp_monodepth = dp_sfm_rec_path.parent / "monodepth"
     dp_monodepth.mkdir(exist_ok=True)
-    depth_model = build_monocular_depth_model(device='cuda')
-    disp_dict, original_images = extract_dense_depth_maps(depth_model, image_paths, dp_depth=dp_monodepth)
+    depth_model = build_monocular_depth_model(device='cuda', model='DepthAnything')
+    disp_dict, dict_original_images = extract_dense_depth_maps(depth_model, image_paths, dp_depth=dp_monodepth)
 
     # 4. Align Dense Depth
-    # TODO: Save the Mono Depth into binary files
-    depth_dict, unproj_dense_points3D = align_dense_depth_maps(sfm_rec, sparse_depth, disp_dict, original_images)
+    depth_dict, unproj_dense_points3D = align_dense_depth_maps(sfm_rec, sparse_depth, disp_dict, dict_original_images)
 
     # 5. Write the Ply Out
     dp_point_cloud_output = dp_sfm_rec_path.parent / "mono-depth-aligned"
