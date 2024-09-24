@@ -5,29 +5,29 @@
 # LICENSE file in the root directory of this source tree.
 
 
-import matplotlib
-import numpy as np
-
-import torch
-import torch.nn.functional as F
 import os
-import cv2
-import math
 import random
 import struct
-from tqdm import tqdm
-from .metric import closed_form_inverse, closed_form_inverse_OpenCV
 
+import cv2
+import math
+import matplotlib
+import numpy as np
+import torch
+import torch.nn.functional as F
 from scipy.spatial.transform import Rotation as sciR
-from minipytorch3d.cameras import CamerasBase, PerspectiveCameras
+from tqdm import tqdm
+
+from minipytorch3d.cameras import PerspectiveCameras
+from .metric import closed_form_inverse, closed_form_inverse_OpenCV
 
 
 def average_camera_prediction(
-    camera_predictor,
-    reshaped_image,
-    batch_size,
-    repeat_times=5,
-    query_indices=None,
+        camera_predictor,
+        reshaped_image,
+        batch_size,
+        repeat_times=5,
+        query_indices=None,
 ):
     # Use different frames as query for camera prediction
     # since camera_predictor is super fast,
@@ -35,7 +35,7 @@ def average_camera_prediction(
 
     # Ensure function is only used for inference with batch_size 1
     assert (
-        batch_size == 1
+            batch_size == 1
     ), "This function is designed for inference with batch_size=1."
 
     # Determine the number of frames in the input image
@@ -202,7 +202,7 @@ def transform_camera_relative_to_first(pred_cameras, batch_size):
 
 
 def farthest_point_sampling(
-    distance_matrix, num_samples, most_common_frame_index=0
+        distance_matrix, num_samples, most_common_frame_index=0
 ):
     # Number of points
     distance_matrix = distance_matrix.clamp(min=0)
@@ -263,7 +263,7 @@ def generate_rank_by_interval(N, k):
 
 
 def generate_rank_by_dino(
-    reshaped_image, camera_predictor, query_frame_num, image_size=336
+        reshaped_image, camera_predictor, query_frame_num, image_size=336
 ):
     # Downsample image to image_size x image_size
     # because we found it is unnecessary to use high resolution
@@ -309,7 +309,7 @@ def generate_rank_by_dino(
 
 
 def visual_query_points(
-    images, query_index, query_points, save_name="image_cv2.png"
+        images, query_index, query_points, save_name="image_cv2.png"
 ):
     """
     Processes an image by converting it to BGR color space, drawing circles at specified points,
@@ -323,8 +323,8 @@ def visual_query_points(
     # Convert the image from RGB to BGR
     image_cv2 = cv2.cvtColor(
         (
-            images[:, query_index].squeeze().permute(1, 2, 0).cpu().numpy()
-            * 255
+                images[:, query_index].squeeze().permute(1, 2, 0).cpu().numpy()
+                * 255
         ).astype(np.uint8),
         cv2.COLOR_RGB2BGR,
     )
@@ -426,16 +426,16 @@ def filter_invisible_reprojections(uvs_int, depths):
 
 
 def create_video_with_reprojections(
-    fname_prefix,
-    video_size,
-    reconstruction,
-    image_paths,
-    sparse_depth,
-    sparse_point,
-    original_images=None,
-    draw_radius=3,
-    cmap="gist_rainbow",
-    color_mode="dis_to_center",
+        fname_prefix,
+        video_size,
+        reconstruction,
+        image_paths,
+        sparse_depth,
+        sparse_point,
+        original_images=None,
+        draw_radius=3,
+        cmap="gist_rainbow",
+        color_mode="dis_to_center",
 ):
     """
     Generates a list of images with reprojections of 3D points onto 2D images.
@@ -511,7 +511,7 @@ def create_video_with_reprojections(
         vis_reproj_mask = filter_invisible_reprojections(uvs_int, uv_depth)
 
         for (x, y), color in zip(
-            uvs_int[vis_reproj_mask], colors[vis_reproj_mask]
+                uvs_int[vis_reproj_mask], colors[vis_reproj_mask]
         ):
             cv2.circle(
                 img_with_circles,
@@ -547,7 +547,7 @@ def create_video_with_reprojections(
 
 
 def save_video_with_reprojections(
-    output_path, img_with_circles_list, video_size, fps=1
+        output_path, img_with_circles_list, video_size, fps=1
 ):
     """
     Saves a list of images as a video.
@@ -574,9 +574,9 @@ def save_video_with_reprojections(
 def create_depth_map_visual(depth_map, raw_img, output_filename):
     # Normalize the depth map to the range 0-255
     depth_map_visual = (
-        (depth_map - depth_map.min())
-        / (depth_map.max() - depth_map.min())
-        * 255.0
+            (depth_map - depth_map.min())
+            / (depth_map.max() - depth_map.min())
+            * 255.0
     )
     depth_map_visual = depth_map_visual.astype(np.uint8)
 
@@ -585,8 +585,8 @@ def create_depth_map_visual(depth_map, raw_img, output_filename):
 
     # Apply the colormap and convert to uint8
     depth_map_visual = (cmap(depth_map_visual)[:, :, :3] * 255)[
-        :, :, ::-1
-    ].astype(np.uint8)
+                       :, :, ::-1
+                       ].astype(np.uint8)
 
     # Create a white split region
     split_region = np.ones((raw_img.shape[0], 50, 3), dtype=np.uint8) * 255
@@ -610,7 +610,7 @@ def extract_dense_depth_maps(depth_model, image_paths, original_images=None):
     disp_dict = {}
 
     for idx in tqdm(
-        range(len(image_paths)), desc="Predicting monocular depth maps"
+            range(len(image_paths)), desc="Predicting monocular depth maps"
     ):
         img_fname = image_paths[idx]
         basename = os.path.basename(img_fname)
@@ -633,12 +633,15 @@ def extract_dense_depth_maps(depth_model, image_paths, original_images=None):
 
 
 def align_dense_depth_maps(
-    reconstruction,
-    sparse_depth,
-    disp_dict,
-    original_images,
-    visual_dense_point_cloud=False,
+        reconstruction,
+        sparse_depth,
+        disp_dict,
+        original_images,
+        visual_dense_point_cloud=False,
 ):
+    """
+    https://www.notion.so/VGGSfM-2-0-Try-1058ff730465803da77cc61e5f841323?pvs=4
+    """
     # For dense depth estimation
     from sklearn.linear_model import RANSACRegressor
     from sklearn.linear_model import LinearRegression
@@ -657,7 +660,7 @@ def align_dense_depth_maps(
     }
 
     for img_basename in tqdm(
-        sparse_depth, desc="Load monocular depth and Align"
+            sparse_depth, desc="Load monocular depth and Align"
     ):
         sparse_uvd = np.array(sparse_depth[img_basename])
 
@@ -750,10 +753,10 @@ def align_dense_depth_maps(
                 (unproject_points, np.ones((unproject_points.shape[0], 1)))
             )
             unproject_points_withz = (
-                unproject_points_homo * depth_values.reshape(-1, 1)
+                    unproject_points_homo * depth_values.reshape(-1, 1)
             )
             unproject_points_world = (
-                pyimg.cam_from_world.inverse() * unproject_points_withz
+                    pyimg.cam_from_world.inverse() * unproject_points_withz
             )
 
             rgb_image = original_images[img_basename] / 255.0
@@ -767,9 +770,63 @@ def align_dense_depth_maps(
     if not visual_dense_point_cloud:
         unproj_dense_points3D = None
 
+    # subsampled_points, subsampled_colors = fuse_and_subsample_point_clouds(unproj_dense_points3D)
+
     return depth_dict, unproj_dense_points3D
 
 
+from scipy.spatial import cKDTree
+
+
+def fuse_and_subsample_point_clouds(
+        unproj_dense_points3D_dict, downsample_ratio=16, stem=None
+):
+    all_points = []
+    all_colors = []
+
+    # Combine all point clouds into a single array
+    for img_basename, (points, colors) in unproj_dense_points3D_dict.items():
+        if stem is not None and stem not in img_basename:
+            continue
+        all_points.append(points[::downsample_ratio, :])
+        all_colors.append(colors[::downsample_ratio, :])
+
+    all_points = np.vstack(all_points)
+    all_colors = np.vstack(all_colors)
+
+    num_points = all_points.shape[0]
+    print("Number of points after fusion:", num_points, "from original", all_colors.shape[0], " x 16")
+    return all_points, all_colors
+
+
+def write_unproj_dense_points3D_to_ply(unproj_dense_points3D_ins, filename):
+    # Extract xyz coordinates and rgb values
+    xyz = unproj_dense_points3D_ins[0]
+    rgb = unproj_dense_points3D_ins[1] * 255.0  # Color was scaled to [0, 1] before
+
+    num_points = xyz.shape[0]
+
+    # Open the file in write mode
+    with open(filename, 'w') as ply_file:
+        # Write the header
+        ply_file.write("ply\n")
+        ply_file.write("format ascii 1.0\n")
+        ply_file.write(f"element vertex {num_points}\n")
+        ply_file.write("property float x\n")
+        ply_file.write("property float y\n")
+        ply_file.write("property float z\n")
+        ply_file.write("property uchar red\n")
+        ply_file.write("property uchar green\n")
+        ply_file.write("property uchar blue\n")
+        ply_file.write("end_header\n")
+
+        # Write the point data
+        for i in range(num_points):
+            x, y, z = xyz[i]
+            r, g, b = rgb[i]
+            ply_file.write(f"{x} {y} {z} {int(r)} {int(g)} {int(b)}\n")
+
+    print("Point cloud saved to", filename, "containing %i points." % num_points)
 def generate_grid_samples(rect, N=None, pixel_interval=None):
     """
     Generate a tensor with shape (N, 2) representing grid-sampled points inside a rectangle.

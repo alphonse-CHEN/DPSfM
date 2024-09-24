@@ -142,3 +142,6 @@ dmypy.json
 # Folder specific to your needs
 **/tmp/
 **/outputs/
+/.idea
+/examples
+*.ply

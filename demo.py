@@ -5,15 +5,21 @@
 # LICENSE file in the root directory of this source tree.
 
 
-import torch
 import hydra
+import torch
+# ========= Set the Torch Hub Directory =========
+from colorama import Fore, Style
 from omegaconf import DictConfig, OmegaConf
 
-from vggsfm.runners.runner import VGGSfMRunner
 from vggsfm.datasets.demo_loader import DemoLoader
+from vggsfm.runners.runner import VGGSfMRunner
 from vggsfm.utils.utils import seed_all_random_engines
 
+torch.hub.set_dir("ckpt")
+print("Torch HUB DIR: ", Fore.CYAN + torch.hub.get_dir() + Style.RESET_ALL)
 
+
+# ===============================================
 @hydra.main(config_path="cfgs/", config_name="demo")
 def demo_fn(cfg: DictConfig):
     """
@@ -84,5 +90,10 @@ def demo_fn(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    import time
+
+    start_time = time.time()
     with torch.no_grad():
         demo_fn()
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time} seconds")
