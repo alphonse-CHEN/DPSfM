@@ -7,13 +7,19 @@
 
 import hydra
 import torch
+# ========= Set the Torch Hub Directory =========
+from colorama import Fore, Style
 from omegaconf import DictConfig, OmegaConf
 
 from vggsfm.datasets.demo_loader import DemoLoader
 from vggsfm.runners.runner import VGGSfMRunner
 from vggsfm.utils.utils import seed_all_random_engines
 
+torch.hub.set_dir("ckpt")
+print("Torch HUB DIR: ", Fore.CYAN + torch.hub.get_dir() + Style.RESET_ALL)
 
+
+# ===============================================
 @hydra.main(config_path="cfgs/", config_name="demo")
 def demo_fn(cfg: DictConfig):
     """
@@ -57,20 +63,21 @@ def demo_fn(cfg: DictConfig):
         "scene_dir"
     ]  # which is also cfg.SCENE_DIR for DemoLoader
 
-    scene_name = Path(output_dir).name
-    output_dir = (Path(output_dir) / f"vsfm-{scene_name}-col-fmt").resolve().as_posix()
-
     images = batch["image"]
     masks = batch["masks"] if batch["masks"] is not None else None
     crop_params = (
         batch["crop_params"] if batch["crop_params"] is not None else None
     )
 
+    # Cache the original images for visualization, so that we don't need to re-load many times
+    original_images = batch["original_images"]
+
     # Run VGGSfM
     # Both visualization and output writing are performed inside VGGSfMRunner
     predictions = vggsfm_runner.run(
         images,
         masks=masks,
+        original_images=original_images,
         image_paths=image_paths,
         crop_params=crop_params,
         seq_name=seq_name,
@@ -83,13 +90,10 @@ def demo_fn(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-    import os
+    import time
 
-    dp_torch_hub = Path('/d_disk/torch_hub')
-    # Set Torhc Hub and HuggingFace hub to d_disk
-    torch.hub.set_dir(dp_torch_hub.as_posix())
-    os.environ["HF_HOME"] = "/d_disk/hf_hub"
-
+    start_time = time.time()
     with torch.no_grad():
         demo_fn()
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time} seconds")
