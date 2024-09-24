@@ -5,46 +5,36 @@
 # LICENSE file in the root directory of this source tree.
 
 
-import copy
-import datetime
 import os
 import sys
-from collections import defaultdict
+import copy
+import torch
+import datetime
 
 import numpy as np
-import pycolmap
-import torch
-from hydra.utils import instantiate
-from torch.cuda.amp import autocast
 from visdom import Visdom
+from torch.cuda.amp import autocast
+from hydra.utils import instantiate
+from lightglue import SuperPoint, SIFT, ALIKED
 
-from dependency.LightGlue.lightglue import SuperPoint, SIFT, ALIKED
+from collections import defaultdict
+from vggsfm.utils.visualizer import Visualizer
 from vggsfm.two_view_geo.estimate_preliminary import (
     estimate_preliminary_cameras,
 )
-from vggsfm.utils.triangulation import triangulate_tracks
-from vggsfm.utils.triangulation_helpers import cam_from_img, filter_all_points3D
+
 from vggsfm.utils.utils import (
-    write_array,
-    generate_grid_samples,
-    generate_rank_by_midpoint,
     generate_rank_by_dino,
     generate_rank_by_interval,
     calculate_index_mappings,
-    extract_dense_depth_maps,
-    align_dense_depth_maps,
+    extract_dense_depth_maps_and_save,
+    align_dense_depth_maps_and_save,
     switch_tensor_order,
-    sample_subrange,
     average_camera_prediction,
     create_video_with_reprojections,
-    save_video_with_reprojections,
-    write_unproj_dense_points3D_to_ply,
-    fuse_and_subsample_point_clouds,
 )
-from vggsfm.utils.visualizer import Visualizer
-from pathlib import Path
 
-# Optional imports
+# Try to import poselib for additional functionality
 try:
     import poselib
     from vggsfm.two_view_geo.estimate_preliminary import (
@@ -55,6 +45,8 @@ try:
 except:
     print("Poselib is not installed. Please disable use_poselib")
 
+# Try to import PyTorch3D for visualization
+
 try:
     from pytorch3d.structures import Pointclouds
     from pytorch3d.vis.plotly_vis import plot_scene
@@ -62,7 +54,7 @@ try:
         PerspectiveCameras as PerspectiveCamerasVisual,
     )
 except:
-    print("PyTorch3d is not available. Please disable visdom.")
+    print("PyTorch3d is not available. Please disable visdom. ")
 
 
 class VGGSfMRunner:
@@ -72,9 +64,6 @@ class VGGSfMRunner:
 
         This class encapsulates the entire SfM process, including model initialization,
         sparse and dense reconstruction, and visualization.
-
-        Args:
-            cfg: Configuration object containing pipeline settings.
         """
 
         self.cfg = cfg
@@ -117,15 +106,19 @@ class VGGSfMRunner:
         """
 
         print("Building VGGSfM")
+        # Instantiate the model using the configuration
+        model = instantiate(self.cfg.MODEL, _recursive_=False, cfg=self.cfg)
 
-        vggsfm = instantiate(self.cfg.MODEL, _recursive_=False, cfg=self.cfg)
-
+        # Load the checkpoint, either from a URL or a local file
         if self.cfg.auto_download_ckpt:
-            vggsfm.from_pretrained(self.cfg.model_name)
+            _VGGSFM_URL = "https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_0_0.bin"
+            checkpoint = torch.hub.load_state_dict_from_url(_VGGSFM_URL)
         else:
             checkpoint = torch.load(self.cfg.resume_ckpt)
-            vggsfm.load_state_dict(checkpoint, strict=True)
-        self.vggsfm_model = vggsfm.to(self.device).eval()
+
+        # Load the state dict and move the model to the appropriate device
+        model.load_state_dict(checkpoint, strict=True)
+        self.vggsfm_model = model.to(self.device).eval()
         print("VGGSfM built successfully")
 
     def build_monocular_depth_model(self):
@@ -147,6 +140,7 @@ class VGGSfMRunner:
         )
 
         print("Building DepthAnythingV2")
+
         model_config = {
             "encoder": "vitl",
             "features": 256,
@@ -156,20 +150,21 @@ class VGGSfMRunner:
         _DEPTH_ANYTHING_V2_URL = "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth"
         checkpoint = torch.hub.load_state_dict_from_url(_DEPTH_ANYTHING_V2_URL)
         depth_model.load_state_dict(checkpoint)
-        self.depth_model = depth_model.to(self.device).eval()
+        depth_model = depth_model.to(self.device).eval()
+        self.depth_model = depth_model
         print(f"DepthAnythingV2 built successfully")
 
     def build_visdom(self):
         """
         Set up a Visdom server for visualization.
         """
-        self.viz = Visdom()
+        viz = Visdom()
+        self.viz = viz
 
     def run(
             self,
             images,
             masks=None,
-            original_images=None,
             image_paths=None,
             crop_params=None,
             query_frame_num=None,
@@ -188,8 +183,6 @@ class VGGSfMRunner:
                 width. The values should be in the range (0,1).
             masks (torch.Tensor, optional): Input masks with shape Tx1xHxW or BxTx1xHxW.
                 Binary masks where 1 indicates the pixel is filtered out.
-            original_images (dict, optional): Dictionary with image basename as keys and original
-                numpy images (rgb) as values.
             image_paths (list of str, optional): List of paths to input images. If not
                 provided, you can use placeholder names such as image0000.png, image0001.png.
             crop_params (torch.Tensor, optional): A tensor with shape Tx8 or BxTx8. Crop parameters
@@ -234,16 +227,7 @@ class VGGSfMRunner:
             )
 
             # Save the sparse reconstruction results
-            if self.cfg.save_to_disk:
-                self.save_sparse_reconstruction(
-                    predictions, seq_name, output_dir
-                )
-
-                if predictions["additional_points_dict"] is not None:
-                    additional_dir = os.path.join(output_dir, "additional")
-                    os.makedirs(additional_dir, exist_ok=True)
-                    torch.save(predictions["additional_points_dict"],
-                               os.path.join(additional_dir, "additional_points_dict.pt"))
+            self.save_sparse_reconstruction(predictions, seq_name, output_dir)
 
             # Extract sparse depth and point information if needed for further processing
             if self.cfg.dense_depth or self.cfg.make_reproj_video:
@@ -256,31 +240,16 @@ class VGGSfMRunner:
             # Perform dense reconstruction if enabled
             if self.cfg.dense_depth:
                 predictions = self.dense_reconstruct(
-                    predictions, image_paths, original_images
+                    predictions, image_paths, output_dir
                 )
-
-                # Save the dense depth maps
-                if self.cfg.save_to_disk:
-                    self.save_dense_depth_maps(
-                        predictions["depth_dict"], output_dir
-                    )
-
-                    self.save_dense_depth_into_point_cloud(
-                        predictions["unproj_dense_points3D"], output_dir
-                    )
 
             # Create reprojection video if enabled
             if self.cfg.make_reproj_video:
                 max_hw = crop_params[0, :, :2].max(dim=0)[0].long()
                 video_size = (max_hw[0].item(), max_hw[1].item())
-                img_with_circles_list = self.make_reprojection_video(
-                    predictions, video_size, image_paths, original_images
+                self.make_reprojection_video(
+                    predictions, video_size, image_paths, output_dir
                 )
-                predictions["reproj_video"] = img_with_circles_list
-                if self.cfg.save_to_disk:
-                    self.save_reprojection_video(
-                        img_with_circles_list, video_size, output_dir
-                    )
 
             # Visualize the 3D reconstruction if enabled
             if self.cfg.viz_visualize:
@@ -301,7 +270,6 @@ class VGGSfMRunner:
             seq_name=None,
             output_dir=None,
             dtype=None,
-            back_to_original_resolution=True,
     ):
         """
         Perform sparse reconstruction on the given images.
@@ -341,14 +309,13 @@ class VGGSfMRunner:
             dtype = self.dtype
 
         predictions = {}
+        extra_dict = {}
 
         # Find the query frames using DINO or frame names
         with autocast(dtype=dtype):
-            if self.cfg.query_by_midpoint:
-                query_frame_indexes = generate_rank_by_midpoint(frame_num)
-            elif self.cfg.query_by_interval:
+            if self.cfg.query_by_interval:
                 query_frame_indexes = generate_rank_by_interval(
-                    frame_num, (frame_num // query_frame_num + 1)
+                    frame_num, frame_num // query_frame_num
                 )
             else:
                 query_frame_indexes = generate_rank_by_dino(
@@ -358,7 +325,6 @@ class VGGSfMRunner:
         # Extract base names from image paths
         image_paths = [os.path.basename(imgpath) for imgpath in image_paths]
 
-        center_order = None
         # Reorder frames if center_order is enabled
         if self.cfg.center_order:
             # The code below switchs the first frame (frame 0) to the most common frame
@@ -426,7 +392,6 @@ class VGGSfMRunner:
                 masks,
                 fmaps_for_tracker,
                 query_frame_indexes,
-                self.cfg.fine_tracking,
                 bound_bboxes,
             )
 
@@ -440,7 +405,6 @@ class VGGSfMRunner:
                     masks,
                     fmaps_for_tracker,
                     [pred_track, pred_vis, pred_score],
-                    self.cfg.fine_tracking,
                     bound_bboxes,
                 )
 
@@ -492,13 +456,10 @@ class VGGSfMRunner:
             (
                 extrinsics_opencv,
                 intrinsics_opencv,
-                extra_params,
                 points3D,
                 points3D_rgb,
                 reconstruction,
                 valid_frame_mask,
-                valid_2D_mask,
-                valid_tracks,
             ) = self.triangulator(
                 pred_cameras,
                 pred_track,
@@ -515,60 +476,9 @@ class VGGSfMRunner:
                 camera_type=self.cfg.camera_type,
             )
 
-        additional_points_dict = None
-
-        if self.cfg.extra_pt_pixel_interval > 0:
-            additional_points_dict = self.triangulate_extra_points(
-                images,
-                masks,
-                fmaps_for_tracker,
-                bound_bboxes,
-                intrinsics_opencv,
-                extra_params,
-                extrinsics_opencv,
-                image_paths,
-                frame_num,
-            )
-            additional_points3D = torch.cat(
-                [
-                    additional_points_dict[img_name]["points3D"]
-                    for img_name in image_paths
-                ],
-                dim=0,
-            )
-            additional_points3D_rgb = torch.cat(
-                [
-                    additional_points_dict[img_name]["points3D_rgb"]
-                    for img_name in image_paths
-                ],
-                dim=0,
-            )
-
-            additional_points_dict["sfm_points_num"] = len(points3D)
-            additional_points_dict["additional_points_num"] = len(additional_points3D)
-
-            if self.cfg.concat_extra_points:
-                additional_points3D_numpy = additional_points3D.cpu().numpy()
-                additional_points3D_rgb_numpy = (
-                    (additional_points3D_rgb * 255).long().cpu().numpy()
-                )
-                for extra_point_idx in range(len(additional_points3D)):
-                    reconstruction.add_point3D(
-                        additional_points3D_numpy[extra_point_idx],
-                        pycolmap.Track(),
-                        additional_points3D_rgb_numpy[extra_point_idx],
-                    )
-
-                points3D = torch.cat([points3D, additional_points3D], dim=0)
-                points3D_rgb = torch.cat(
-                    [points3D_rgb, additional_points3D_rgb], dim=0
-                )
-
         if self.cfg.filter_invalid_frame:
             extrinsics_opencv = extrinsics_opencv[valid_frame_mask]
             intrinsics_opencv = intrinsics_opencv[valid_frame_mask]
-            if extra_params is not None:
-                extra_params = extra_params[valid_frame_mask]
             invalid_ids = torch.nonzero(~valid_frame_mask).squeeze(1)
             invalid_ids = invalid_ids.cpu().numpy().tolist()
             if len(invalid_ids) > 0:
@@ -577,169 +487,55 @@ class VGGSfMRunner:
 
         img_size = images.shape[-1]  # H or W, the same for square
 
+        rescale_camera = True
+
+        for pyimageid in reconstruction.images:
+            # Reshaped the padded&resized image to the original size
+            # Rename the images to the original names
+            pyimage = reconstruction.images[pyimageid]
+            pycamera = reconstruction.cameras[pyimage.camera_id]
+            pyimage.name = image_paths[pyimageid]
+
+            if rescale_camera:
+                # Rescale the camera parameters
+                pred_params = copy.deepcopy(pycamera.params)
+                real_image_size = crop_params[0, pyimageid][:2]
+                resize_ratio = real_image_size.max() / img_size
+                real_focal = resize_ratio * pred_params[0]
+                real_pp = real_image_size.cpu().numpy() // 2
+
+                pred_params[0] = real_focal
+                pred_params[1:3] = real_pp
+                pycamera.params = pred_params
+                pycamera.width = real_image_size[0]
+                pycamera.height = real_image_size[1]
+
+                resize_ratio = resize_ratio.item()
+
+            if self.cfg.shift_point2d_to_original_res:
+                # Also shift the point2D to original resolution
+                top_left = crop_params[0, pyimageid][-4:-2].abs().cpu().numpy()
+                for point2D in pyimage.points2D:
+                    point2D.xy = (point2D.xy - top_left) * resize_ratio
+
+            if self.cfg.shared_camera:
+                # If shared_camera, all images share the same camera
+                # no need to rescale any more
+                rescale_camera = False
+
         if center_order is not None:
             # NOTE we changed the image order previously, now we need to scwitch it back
             extrinsics_opencv = extrinsics_opencv[center_order]
             intrinsics_opencv = intrinsics_opencv[center_order]
-            if extra_params is not None:
-                extra_params = extra_params[center_order]
-            pred_track = pred_track[:, center_order]
-            pred_vis = pred_vis[:, center_order]
-            if pred_score is not None:
-                pred_score = pred_score[:, center_order]
-
-        if back_to_original_resolution:
-            reconstruction = self.rename_colmap_recons_and_rescale_camera(
-                reconstruction,
-                image_paths,
-                crop_params,
-                img_size,
-                shared_camera=self.cfg.shared_camera,
-                shift_point2d_to_original_res=self.cfg.shift_point2d_to_original_res,
-            )
-
-            # Also rescale the intrinsics_opencv tensor
-            fname_to_id = {
-                reconstruction.images[imgid].name: imgid
-                for imgid in reconstruction.images
-            }
-            intrinsics_original_res = []
-            # We assume the returned extri and intri cooresponds to the order of sorted image_paths
-            for fname in sorted(image_paths):
-                pyimg = reconstruction.images[fname_to_id[fname]]
-                pycam = reconstruction.cameras[pyimg.camera_id]
-                intrinsics_original_res.append(pycam.calibration_matrix())
-            intrinsics_opencv = torch.from_numpy(
-                np.stack(intrinsics_original_res)
-            ).to(device)
 
         predictions["extrinsics_opencv"] = extrinsics_opencv
-        # NOTE! If not back_to_original_resolution, then intrinsics_opencv
-        # cooresponds to the resized one (e.g., 1024x1024)
         predictions["intrinsics_opencv"] = intrinsics_opencv
         predictions["points3D"] = points3D
         predictions["points3D_rgb"] = points3D_rgb
         predictions["reconstruction"] = reconstruction
-        predictions["extra_params"] = extra_params
         predictions["unproj_dense_points3D"] = None  # placeholder here
-        predictions["valid_2D_mask"] = valid_2D_mask
-        predictions["pred_track"] = pred_track
-        predictions["pred_vis"] = pred_vis
-        predictions["pred_score"] = pred_score
-        predictions["valid_tracks"] = valid_tracks
-
-        predictions["additional_points_dict"] = additional_points_dict
 
         return predictions
-
-    def triangulate_extra_points(
-            self,
-            images,
-            masks,
-            fmaps_for_tracker,
-            bound_bboxes,
-            intrinsics_opencv,
-            extra_params,
-            extrinsics_opencv,
-            image_paths,
-            frame_num,
-    ):
-        """
-        Triangulate extra points for each frame and return a dictionary containing 3D points and their RGB values.
-
-        Returns:
-            dict: A dictionary containing 3D points and their RGB values for each frame.
-        """
-        from vggsfm.models.utils import sample_features4d
-
-        additional_points_dict = {}
-        for frame_idx in range(frame_num):
-            rect_for_sample = bound_bboxes[:, frame_idx].clone()
-            rect_for_sample = rect_for_sample.floor()
-            rect_for_sample[:, :2] += self.cfg.extra_pt_pixel_interval // 2
-            rect_for_sample[:, 2:] -= self.cfg.extra_pt_pixel_interval // 2
-            grid_points = generate_grid_samples(
-                rect_for_sample, pixel_interval=self.cfg.extra_pt_pixel_interval
-            )
-            grid_points = grid_points.floor()
-
-            grid_rgb = sample_features4d(
-                images[:, frame_idx], grid_points[None]
-            ).squeeze(0)
-
-            if self.cfg.extra_by_neighbor > 0:
-                neighbor_start, neighbor_end = sample_subrange(
-                    frame_num, frame_idx, self.cfg.extra_by_neighbor
-                )
-            else:
-                neighbor_start = 0
-                neighbor_end = frame_num
-
-            rel_frame_idx = frame_idx - neighbor_start
-
-            extra_track, extra_vis, extra_score = predict_tracks(
-                self.cfg.query_method,
-                self.cfg.max_query_pts,
-                self.track_predictor,
-                images[:, neighbor_start:neighbor_end],
-                (
-                    masks[:, neighbor_start:neighbor_end]
-                    if masks is not None
-                    else masks
-                ),
-                fmaps_for_tracker[:, neighbor_start:neighbor_end],
-                [rel_frame_idx],
-                fine_tracking=False,
-                bound_bboxes=bound_bboxes[:, neighbor_start:neighbor_end],
-                query_points_dict={rel_frame_idx: grid_points[None]},
-            )
-
-            extra_params_neighbor = (
-                extra_params[neighbor_start:neighbor_end]
-                if extra_params is not None
-                else None
-            )
-            extrinsics_neighbor = extrinsics_opencv[neighbor_start:neighbor_end]
-            intrinsics_neighbor = intrinsics_opencv[neighbor_start:neighbor_end]
-
-            extra_track_normalized = cam_from_img(
-                extra_track, intrinsics_neighbor, extra_params_neighbor
-            )
-
-            (extra_triangulated_points, extra_inlier_num, extra_inlier_mask) = (
-                triangulate_tracks(
-                    extrinsics_neighbor,
-                    extra_track_normalized.squeeze(0),
-                    track_vis=extra_vis.squeeze(0),
-                    track_score=extra_score.squeeze(0),
-                )
-            )
-
-            valid_triangulation_mask = extra_inlier_num > 3
-
-            valid_poins3D_mask, _ = filter_all_points3D(
-                extra_triangulated_points,
-                extra_track.squeeze(0),
-                extrinsics_neighbor,
-                intrinsics_neighbor,
-                extra_params=extra_params_neighbor,  # Pass extra_params to filter_all_points3D
-                max_reproj_error=self.cfg.max_reproj_error,
-            )
-
-            valid_triangulation_mask = torch.logical_and(
-                valid_triangulation_mask, valid_poins3D_mask
-            )
-
-            extra_points3D = extra_triangulated_points[valid_triangulation_mask]
-            extra_points3D_rgb = grid_rgb[valid_triangulation_mask]
-
-            additional_points_dict[image_paths[frame_idx]] = {
-                "points3D": extra_points3D,
-                "points3D_rgb": extra_points3D_rgb,
-                "uv": grid_points[valid_triangulation_mask],
-            }
-
-        return additional_points_dict
 
     def extract_sparse_depth_and_point_from_reconstruction(self, predictions):
         """
@@ -773,13 +569,12 @@ class VGGSfMRunner:
         predictions["sparse_point"] = sparse_point
         return predictions
 
-    def dense_reconstruct(self, predictions, image_paths, original_images):
+    def dense_reconstruct(self, predictions, image_paths, output_dir):
         """
         Args:
             predictions (dict): A dictionary containing the sparse reconstruction results.
             image_paths (list): A list of paths to the input images.
-            original_images (dict): Dictionary with image basename as keys and original
-                numpy images (rgb) as values.
+            output_dir (str): The directory to save the dense reconstruction results.
 
         The function performs the following steps:
         1. Predicts dense depth maps using a monocular depth estimation model, e.g., DepthAnything V2.
@@ -789,77 +584,36 @@ class VGGSfMRunner:
         """
 
         print("Predicting dense depth maps via monocular depth estimation.")
-
-        disp_dict = extract_dense_depth_maps(
-            self.depth_model, image_paths, original_images
+        depth_dir = os.path.join(output_dir, "depths")
+        extract_dense_depth_maps_and_save(
+            self.depth_model, depth_dir, image_paths
         )
 
         sparse_depth = predictions["sparse_depth"]
         reconstruction = predictions["reconstruction"]
 
         # Align dense depth maps
+        image_dir_prefix = os.path.dirname(image_paths[0])
         print("Aligning dense depth maps by sparse SfM points")
-        depth_dict, unproj_dense_points3D = align_dense_depth_maps(
+        unproj_dense_points3D = align_dense_depth_maps_and_save(
             reconstruction,
             sparse_depth,
-            disp_dict,
-            original_images,
+            depth_dir,
+            image_dir_prefix,
             visual_dense_point_cloud=self.cfg.visual_dense_point_cloud,
         )
 
         # Update predictions with dense reconstruction results
-        predictions["depth_dict"] = depth_dict
         predictions["unproj_dense_points3D"] = unproj_dense_points3D
 
         return predictions
 
-    def save_dense_depth_maps(self, depth_dict, output_dir):
-        """
-        Save the dense depth maps to disk.
-
-        Args:
-            depth_dict (dict): Dictionary containing depth maps.
-            output_dir (str): Directory to save the depth maps.
-        """
-        depth_dir = os.path.join(output_dir, "depths")
-        os.makedirs(depth_dir, exist_ok=True)
-        for img_basename in depth_dict:
-            depth_map = depth_dict[img_basename]
-            depth_map_path = os.path.join(depth_dir, img_basename)
-
-            name_wo_extension = os.path.splitext(depth_map_path)[0]
-            out_fname_with_bin = name_wo_extension + ".bin"
-            write_array(depth_map, out_fname_with_bin)
-
-    def save_dense_depth_into_point_cloud(self, unproj_dense_points3D, output_dir):
-        """
-        Save the dense point cloud to disk.
-
-        Args:
-            unproj_dense_points3D (dict): Dictionary containing unprojected dense points.
-            output_dir (str): Directory to save the point cloud.
-        """
-        point_cloud_dir = os.path.join(output_dir, "point_cloud")
-        os.makedirs(point_cloud_dir, exist_ok=True)
-        for img_basename in unproj_dense_points3D:
-            fn_output_path = Path(point_cloud_dir) / (img_basename.split('.')[0] + '.ply')
-            write_unproj_dense_points3D_to_ply(
-                unproj_dense_points3D_ins=unproj_dense_points3D[img_basename],
-                filename=fn_output_path
-            )
-        fuse_points, fuse_colors = fuse_and_subsample_point_clouds(
-            unproj_dense_points3D, stem="frames_0"
-        )
-        write_unproj_dense_points3D_to_ply(
-            unproj_dense_points3D_ins=(fuse_points, fuse_colors),
-            filename=os.path.join(point_cloud_dir, "fused_points.ply")
-        )
-
     def make_reprojection_video(
-            self, predictions, video_size, image_paths, original_images
+            self, predictions, video_size, image_paths, output_dir
     ):
         """
         Create a video with reprojections of the 3D points onto the original images.
+        The video is saved to {output_dir}/visuals/reproj.mp4
 
         Args:
             predictions (dict): A dictionary containing the reconstruction results,
@@ -867,8 +621,6 @@ class VGGSfMRunner:
             video_size (tuple): A tuple specifying the size of the output video (width, height).
             image_paths (list): A list of paths to the input images.
             output_dir (str): The directory to save the output video.
-            original_images (dict): Dictionary with image basename as keys and original
-                numpy images (rgb) as values.
         """
         reconstruction = predictions["reconstruction"]
         sparse_depth = predictions["sparse_depth"]
@@ -877,35 +629,18 @@ class VGGSfMRunner:
         image_dir_prefix = os.path.dirname(image_paths[0])
         image_paths = [os.path.basename(imgpath) for imgpath in image_paths]
 
-        img_with_circles_list = create_video_with_reprojections(
+        visual_dir = os.path.join(output_dir, "visuals")
+
+        os.makedirs(visual_dir, exist_ok=True)
+
+        create_video_with_reprojections(
+            os.path.join(visual_dir, "reproj.mp4"),
             image_dir_prefix,
             video_size,
             reconstruction,
             image_paths,
             sparse_depth,
             sparse_point,
-            original_images,
-        )
-
-        return img_with_circles_list
-
-    def save_reprojection_video(
-            self, img_with_circles_list, video_size, output_dir
-    ):
-        """
-        Save the reprojection video to disk.
-
-        Args:
-            img_with_circles_list (list): List of images with circles to be included in the video.
-            video_size (tuple): A tuple specifying the size of the output video (width, height).
-            output_dir (str): The directory to save the output video.
-        """
-        visual_dir = os.path.join(output_dir, "visuals")
-        os.makedirs(visual_dir, exist_ok=True)
-        save_video_with_reprojections(
-            os.path.join(visual_dir, "reproj.mp4"),
-            img_with_circles_list,
-            video_size,
         )
 
     def save_sparse_reconstruction(
@@ -926,13 +661,10 @@ class VGGSfMRunner:
         if output_dir is None:
             output_dir = os.path.join("output", seq_name)
 
-        sfm_output_dir = os.path.join(output_dir, "sparse")
         print("-" * 50)
-        print(
-            f"The output has been saved in COLMAP style at: {sfm_output_dir} "
-        )
-        os.makedirs(sfm_output_dir, exist_ok=True)
-        reconstruction_pycolmap.write(sfm_output_dir)
+        print(f"The output has been saved in COLMAP style at: {output_dir} ")
+        os.makedirs(output_dir, exist_ok=True)
+        reconstruction_pycolmap.write(output_dir)
 
     def visualize_3D_in_visdom(
             self, predictions, seq_name=None, output_dir=None
@@ -1001,13 +733,8 @@ class VGGSfMRunner:
 
         self.viz.plotlyplot(fig, env=env_name, win="3D")
 
-    def visualize_3D_in_gradio(
-            self, predictions, seq_name=None, output_dir=None
-    ):
-        from vggsfm.utils.gradio import (
-            vggsfm_predictions_to_glb,
-            visualize_by_gradio,
-        )
+    def visualize_3D_in_gradio(self, predictions, seq_name=None, output_dir=None):
+        from vggsfm.utils.gradio import vggsfm_predictions_to_glb, visualize_by_gradio
 
         # Convert predictions to GLB scene
         glbscene = vggsfm_predictions_to_glb(predictions)
@@ -1026,56 +753,7 @@ class VGGSfMRunner:
 
         unproj_dense_points3D = predictions["unproj_dense_points3D"]
         if unproj_dense_points3D is not None:
-            print(
-                "Dense point cloud visualization in Gradio is not supported due to time constraints."
-            )
-
-    def rename_colmap_recons_and_rescale_camera(
-            self,
-            reconstruction,
-            image_paths,
-            crop_params,
-            img_size,
-            shift_point2d_to_original_res=False,
-            shared_camera=False,
-    ):
-        rescale_camera = True
-
-        for pyimageid in reconstruction.images:
-            # Reshaped the padded&resized image to the original size
-            # Rename the images to the original names
-            pyimage = reconstruction.images[pyimageid]
-            pycamera = reconstruction.cameras[pyimage.camera_id]
-            pyimage.name = image_paths[pyimageid]
-
-            if rescale_camera:
-                # Rescale the camera parameters
-                pred_params = copy.deepcopy(pycamera.params)
-                real_image_size = crop_params[0, pyimageid][:2]
-                resize_ratio = real_image_size.max() / img_size
-                real_focal = resize_ratio * pred_params[0]
-                real_pp = real_image_size.cpu().numpy() // 2
-
-                pred_params[0] = real_focal
-                pred_params[1:3] = real_pp
-                pycamera.params = pred_params
-                pycamera.width = real_image_size[0]
-                pycamera.height = real_image_size[1]
-
-                resize_ratio = resize_ratio.item()
-
-            if shift_point2d_to_original_res:
-                # Also shift the point2D to original resolution
-                top_left = crop_params[0, pyimageid][-4:-2].abs().cpu().numpy()
-                for point2D in pyimage.points2D:
-                    point2D.xy = (point2D.xy - top_left) * resize_ratio
-
-            if shared_camera:
-                # If shared_camera, all images share the same camera
-                # no need to rescale any more
-                rescale_camera = False
-
-        return reconstruction
+            print("Dense point cloud visualization in Gradio is not supported due to time constraints.")
 
 
 ################################################ Helper Functions
@@ -1097,10 +775,7 @@ def predict_tracks(
         masks,
         fmaps_for_tracker,
         query_frame_indexes,
-        fine_tracking,
         bound_bboxes=None,
-        query_points_dict=None,
-        max_points_num=163840,
 ):
     """
     Predict tracks for the given images and masks.
@@ -1116,12 +791,7 @@ def predict_tracks(
         masks (torch.Tensor): A tensor of shape (B, T, 1, H, W) representing masks for the images. 1 indicates ignored.
         fmaps_for_tracker (torch.Tensor): A tensor of feature maps for the tracker.
         query_frame_indexes (list): A list of indices representing the query frames.
-        fine_tracking (bool): Whether to perform fine tracking.
         bound_bboxes (torch.Tensor, optional): A tensor of shape (B, T, 4) representing bounding boxes for the images.
-        max_points_num (int): The maximum number of points to process in one chunk.
-                              If the total number of points (T * N) exceeds max_points_num,
-                              the query points are split into smaller chunks.
-                              Default is 163840, suitable for 40GB GPUs.
 
     Returns:
         tuple: A tuple containing the predicted tracks, visibility, and scores.
@@ -1150,16 +820,13 @@ def predict_tracks(
         mask = masks[:, query_index] if masks is not None else None
 
         # Find query_points at the query frame
-        if query_points_dict is None:
-            query_points = get_query_points(
-                images[:, query_index],
-                mask,
-                query_method,
-                max_query_pts,
-                bound_bbox=bound_bbox,
-            )
-        else:
-            query_points = query_points_dict[query_index]
+        query_points = get_query_points(
+            images[:, query_index],
+            mask,
+            query_method,
+            max_query_pts,
+            bound_bbox=bound_bbox,
+        )
 
         # Switch so that query_index frame stays at the first frame
         # This largely simplifies the code structure of tracker
@@ -1170,34 +837,10 @@ def predict_tracks(
             [images, fmaps_for_tracker], new_order
         )
 
-        all_points_num = images_feed.shape[1] * max_query_pts
-
-        if all_points_num > max_points_num:
-            print('Predict tracks in chunks to fit in memory')
-
-            # Split query_points into smaller chunks to avoid memory issues
-            all_points_num = images_feed.shape[1] * query_points.shape[1]
-
-            shuffle_indices = torch.randperm(query_points.size(1))
-            query_points = query_points[:, shuffle_indices]
-
-            num_splits = (all_points_num + max_points_num - 1) // max_points_num
-            fine_pred_track, pred_vis, pred_score = predict_tracks_in_chunks(
-                track_predictor,
-                images_feed,
-                query_points,
-                fmaps_feed,
-                fine_tracking,
-                num_splits,
-            )
-        else:
-            # Feed into track predictor
-            fine_pred_track, _, pred_vis, pred_score = track_predictor(
-                images_feed,
-                query_points,
-                fmaps=fmaps_feed,
-                fine_tracking=fine_tracking,
-            )
+        # Feed into track predictor
+        fine_pred_track, _, pred_vis, pred_score = track_predictor(
+            images_feed, query_points, fmaps=fmaps_feed
+        )
 
         # Switch back the predictions
         fine_pred_track, pred_vis, pred_score = switch_tensor_order(
@@ -1224,7 +867,6 @@ def comple_nonvis_frames(
         masks,
         fmaps_for_tracker,
         preds,
-        fine_tracking,
         bound_bboxes=None,
         min_vis=500,
 ):
@@ -1244,7 +886,6 @@ def comple_nonvis_frames(
         masks (torch.Tensor): A tensor of shape (B, T, 1, H, W) representing masks for the images.
         fmaps_for_tracker (torch.Tensor): Feature maps for the tracker.
         preds (tuple): A tuple containing predicted tracks, visibility, and scores.
-        fine_tracking (bool): Whether to perform fine tracking.
         bound_bboxes (torch.Tensor, optional): Bounding boxes for the images.
         min_vis (int, optional): The minimum number of visible inliers required. Default is 500.
     Returns:
@@ -1281,7 +922,6 @@ def comple_nonvis_frames(
             masks,
             fmaps_for_tracker,
             non_vis_query_list,
-            fine_tracking,
             bound_bboxes,
         )
 
@@ -1298,57 +938,6 @@ def comple_nonvis_frames(
         if final_trial:
             break
     return pred_track, pred_vis, pred_score
-
-
-def predict_tracks_in_chunks(
-        track_predictor,
-        images_feed,
-        query_points,
-        fmaps_feed,
-        fine_tracking,
-        num_splits,
-):
-    """
-    Process query points in smaller chunks to avoid memory issues.
-
-    Args:
-        track_predictor (object): The track predictor object used for predicting tracks.
-        images_feed (torch.Tensor): A tensor of shape (B, T, C, H, W) representing a batch of images.
-        query_points (torch.Tensor): A tensor of shape (B, N, 2) representing the query points.
-        fmaps_feed (torch.Tensor): A tensor of feature maps for the tracker.
-        fine_tracking (bool): Whether to perform fine tracking.
-        num_splits (int): The number of chunks to split the query points into.
-
-    Returns:
-        tuple: A tuple containing the concatenated predicted tracks, visibility, and scores.
-    """
-    split_query_points = torch.chunk(query_points, num_splits, dim=1)
-
-    fine_pred_track_list = []
-    pred_vis_list = []
-    pred_score_list = []
-
-    for split_points in split_query_points:
-        # Feed into track predictor for each split
-        fine_pred_track, _, pred_vis, pred_score = track_predictor(
-            images_feed,
-            split_points,
-            fmaps=fmaps_feed,
-            fine_tracking=fine_tracking,
-        )
-        fine_pred_track_list.append(fine_pred_track)
-        pred_vis_list.append(pred_vis)
-        pred_score_list.append(pred_score)
-
-    # Concatenate the results from all splits
-    fine_pred_track = torch.cat(fine_pred_track_list, dim=2)
-    pred_vis = torch.cat(pred_vis_list, dim=2)
-    if pred_score is not None:
-        pred_score = torch.cat(pred_score_list, dim=2)
-    else:
-        pred_score = None
-
-    return fine_pred_track, pred_vis, pred_score
 
 
 def get_query_points(
